@@ -553,16 +553,27 @@ def _extract_gst_summary(tables: list[list[list[str]]], text: str = "") -> dict[
     result: dict[str, Any] = {}
     for table in tables:
         header_cells = [_normalise_header(c) for c in table[0]]
+        # Check if this is a GST summary table
         if not any(token in cell for cell in header_cells for token in _GST_SUMMARY_HEADER_TOKENS):
             continue
 
         def rate_col(token: str) -> int | None:
             for i, cell in enumerate(header_cells):
-                if token in cell and "%" in cell:
+                if token in cell and ("%" in cell or "rate" in cell or "pct" in cell):
+                    return i
+            # Fallback: just look for the token
+            for i, cell in enumerate(header_cells):
+                if token in cell:
                     return i
             return None
 
-        cgst_idx, sgst_idx, igst_idx = rate_col("cgst"), rate_col("sgst"), rate_col("igst")
+        # Also check for column headers that explicitly mention taxable value and tax amount
+        taxable_cols = [i for i, cell in enumerate(header_cells) if "taxable" in cell or "assessable" in cell]
+        tax_amt_cols = [i for i, cell in enumerate(header_cells) if "taxamt" in cell or "taxamount" in cell or "tax_amt" in cell]
+
+        cgst_idx = rate_col("cgst")
+        sgst_idx = rate_col("sgst")
+        igst_idx = rate_col("igst")
         total_gst_idx = next((i for i, c in enumerate(header_cells) if "totalgst" in c or "totaltax" in c), None)
 
         for row in table[1:]:
@@ -573,19 +584,35 @@ def _extract_gst_summary(tables: list[list[list[str]]], text: str = "") -> dict[
             def at(idx: int | None) -> float | None:
                 return values[idx] if idx is not None and idx < len(values) else None
 
+            # Try to get taxable value from explicit column first
+            taxable_val = None
+            for tc in taxable_cols:
+                tv = at(tc)
+                if tv is not None:
+                    taxable_val = tv
+                    break
+
             cgst_taxable, cgst_tax = at(cgst_idx + 1) if cgst_idx is not None else None, at(cgst_idx + 2) if cgst_idx is not None else None
             sgst_taxable, sgst_tax = at(sgst_idx + 1) if sgst_idx is not None else None, at(sgst_idx + 2) if sgst_idx is not None else None
             igst_taxable, igst_tax = at(igst_idx + 1) if igst_idx is not None else None, at(igst_idx + 2) if igst_idx is not None else None
             total_gst = at(total_gst_idx)
 
-            if cgst_tax is None and sgst_tax is None and igst_tax is None and total_gst is None:
+            # Also check explicit tax amount columns
+            tax_amt_val = None
+            for tac in tax_amt_cols:
+                tav = at(tac)
+                if tav is not None:
+                    tax_amt_val = tav
+                    break
+
+            if cgst_tax is None and sgst_tax is None and igst_tax is None and total_gst is None and tax_amt_val is None:
                 continue
 
             result["cgstAmount"] = cgst_tax
             result["sgstAmount"] = sgst_tax
             result["igstAmount"] = igst_tax
-            result["taxableValue"] = cgst_taxable or sgst_taxable or igst_taxable
-            result["taxAmount"] = total_gst if total_gst is not None else round(
+            result["taxableValue"] = taxable_val or cgst_taxable or sgst_taxable or igst_taxable
+            result["taxAmount"] = tax_amt_val or total_gst if total_gst is not None else round(
                 (cgst_tax or 0) + (sgst_tax or 0) + (igst_tax or 0), 2
             ) or None
             return result
@@ -626,10 +653,40 @@ def _extract_gross_breakdown(text: str) -> dict[str, Any]:
         result["grossAmount"] = _number(gross_match.group(1))
         result["discountAmount"] = _number(gross_match.group(2))
 
+    # Additional discount patterns
+    if not result.get("discountAmount"):
+        discount_match = re.search(
+            r"\b(?:Discount|Less|Rebate)\s*:?\s*₹?\s*([0-9,]+\.\d{2})",
+            text, re.IGNORECASE,
+        )
+        if discount_match:
+            result["discountAmount"] = _number(discount_match.group(1))
+
     net_match = re.search(r"\*{0,2}\bNET\b\*{0,2}\s+([0-9][0-9,]*\.\d{2})", text, re.IGNORECASE)
     if net_match:
         result["total"] = _number(net_match.group(1))
     return result
+
+
+def _extract_tax_rates_from_tables(tables: list[list[list[str]]]) -> list[float]:
+    """Extract GST tax rates from line item tables or GST summary tables."""
+    rates: set[float] = set()
+    for table in tables:
+        header_cells = [_normalise_header(c) for c in table[0]]
+        # Check for GST% or rate% columns
+        gst_pct_cols = [i for i, cell in enumerate(header_cells) if "gst" in cell and "%" in cell]
+        rate_pct_cols = [i for i, cell in enumerate(header_cells) if "rate" in cell and "%" in cell]
+        tax_pct_cols = [i for i, cell in enumerate(header_cells) if "tax" in cell and "%" in cell]
+        
+        all_pct_cols = set(gst_pct_cols + rate_pct_cols + tax_pct_cols)
+        for row in table[1:]:
+            values = [_number(c) for c in row]
+            for col_idx in all_pct_cols:
+                if col_idx < len(values) and values[col_idx] is not None:
+                    val = values[col_idx]
+                    if 0 < val <= 100:
+                        rates.add(round(val, 2))
+    return sorted(rates)
 
 
 def extract_financial_fields(text: str, *, fallback_currency: str = "USD", tables: list[list[list[str]]] | None = None) -> dict[str, Any]:
@@ -664,7 +721,11 @@ def extract_financial_fields(text: str, *, fallback_currency: str = "USD", table
         subtotal = round(total - tax_amount, 2)
         subtotal_evidence = "Computed as total minus tax"
 
-    rates = sorted({float(value) for value in re.findall(r"(?<!\d)(\d{1,2}(?:\.\d+)?)\s*%", text) if float(value) <= 100})
+    # Extract tax rates from both tables and text
+    table_rates = _extract_tax_rates_from_tables(tables) if tables else []
+    text_rates = sorted({float(value) for value in re.findall(r"(?<!\d)(\d{1,2}(?:\.\d+)?)\s*%", text) if float(value) <= 100})
+    # Combine and deduplicate
+    rates = sorted(set(table_rates + text_rates))
     invoice_number = _find_first(text, [
         r"(?:gst\s*)?(?:tax\s*)?(?:invoice|inv|bill)\s*\.?\s*(?:no|number|#)\s*[\.,:*= _\-–—]*\s*([A-Z0-9$][A-Z0-9$./\-–—]{2,})",
         r"(?:n[uú]mero\s+de\s+factura|factura\s+n[uú]m\.?|factura\s*#)\s*[:_\-–—]?\s*([A-Z0-9$][A-Z0-9$/\-–—]{2,})",
