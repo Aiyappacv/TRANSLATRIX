@@ -1,0 +1,1 @@
+export { ApprovalHistoryPage } from "./ApprovalHistory";

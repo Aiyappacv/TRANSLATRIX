@@ -1,0 +1,71 @@
+name: ${COMPOSE_PROJECT_NAME:-translatrix-pro}
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-translatrix_pro}
+      POSTGRES_USER: ${POSTGRES_USER:-translatrix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-translatrix_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-translatrix} -d ${POSTGRES_DB:-translatrix_pro}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: development
+      DEBUG: "true"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-translatrix}:${POSTGRES_PASSWORD:-translatrix_password}@postgres:5432/${POSTGRES_DB:-translatrix_pro}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-development-secret-key-minimum-32-characters-long}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-development-jwt-secret-minimum-32-characters}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-DevOnly!2026}
+      DEV_SEED_PASSWORD: ${DEV_SEED_PASSWORD:-DevOnly!2026}
+      DEV_DISABLE_MFA: ${DEV_DISABLE_MFA:-true}
+      BACKEND_CORS_ORIGINS: '["http://localhost:${FRONTEND_HOST_PORT:-8081}","http://localhost:5173"]'
+      FRONTEND_UPLOAD_DIR: /app/data/uploads
+      RUN_DB_BOOTSTRAP: "true"
+      SEED_DEVELOPMENT: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - backend_uploads:/app/data/uploads
+    ports:
+      - "${BACKEND_HOST_PORT:-8001}:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api/v1/frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_HOST_PORT:-8081}:80"
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_uploads:

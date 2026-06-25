@@ -1,0 +1,52 @@
+======================================================================
+TRANSLATION ENDPOINTS TEST SUITE - PHASE 7
+======================================================================
+
+[STEP 1] Logging in...
+[OK] Login successful!
+
+======================================================================
+[STEP 2] Ensuring file has extracted content...
+======================================================================
+[INFO] No extraction found, creating extraction with financial test data...
+[WARNING] Extraction status: 500
+Response: Internal Server Error
+
+======================================================================
+[STEP 3] POST /api/v1/files/{file_id}/translate - Translate File
+======================================================================
+
+Testing Financial Data Preservation:
+  - Numbers: €1,250.50, €1,500.60
+  - Dates: 15/03/2024
+  - Invoice Number: INV-2024-001
+  - Tax ID: DE123456789
+  - Account Code: GL-4500-001
+  - Reference: REF-2024-Q1-045
+
+Request payload: {
+  "source_language": "auto",
+  "target_language": "en",
+  "provider": "openai",
+  "preserve_financial_data": true
+}
+
+Status Code: 500
+[FAIL] Translation failed!
+Response: Internal Server Error
+
+======================================================================
+TEST SUMMARY - PHASE 7 REQUIREMENTS
+======================================================================
+POST /files/{file_id}/translate:  FAIL
+GET /translations/{translation_id}:  SKIPPED (no translation created)
+
+Phase 7 Checklist:
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Desktop\Advance  Document  Translator\backend-python\test_translation_endpoints.py", line 218, in <module>
+    print("  \u2713 Language detection (auto)")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python313\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2713' in position 2: character maps to <undefined>
